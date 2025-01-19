@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Permissions-Policy" content="microphone=()">
     <title>Classroom Noise Monitor</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -38,11 +39,22 @@
             const [isListening, setIsListening] = useState(false);
             const [warning, setWarning] = useState(false);
             const [error, setError] = useState('');
+            const [debugInfo, setDebugInfo] = useState('');
             
             const mediaStreamRef = useRef(null);
             const audioContextRef = useRef(null);
             const sourceRef = useRef(null);
             const scriptProcessorRef = useRef(null);
+
+            const checkBrowserSupport = () => {
+                let support = {
+                    getUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+                    audioContext: !!(window.AudioContext || window.webkitAudioContext),
+                    secure: window.location.protocol === 'https:',
+                    iframe: window.self !== window.top
+                };
+                return support;
+            };
             
             useEffect(() => {
                 return () => stopListening();
@@ -50,47 +62,53 @@
 
             const startListening = async () => {
                 try {
+                    // Check browser support first
+                    const support = checkBrowserSupport();
+                    setDebugInfo(JSON.stringify(support, null, 2));
+
+                    if (!support.secure) {
+                        throw new Error('This application requires a secure HTTPS connection.');
+                    }
+
+                    if (!support.getUserMedia) {
+                        throw new Error('Your browser does not support microphone access.');
+                    }
+
                     // Reset any existing audio context
                     if (audioContextRef.current) {
                         await audioContextRef.current.close();
                     }
 
-                    // Get microphone stream
-                    const stream = await navigator.mediaDevices.getUserMedia({
+                    // Request microphone with explicit permissions
+                    const constraints = {
                         audio: {
                             echoCancellation: true,
                             noiseSuppression: true,
                             autoGainControl: false
                         }
-                    });
-                    
+                    };
+
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
                     mediaStreamRef.current = stream;
                     
                     // Create new audio context
-                    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-                    sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    audioContextRef.current = new AudioContext();
                     
-                    // Create script processor
+                    sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
                     scriptProcessorRef.current = audioContextRef.current.createScriptProcessor(2048, 1, 1);
                     
-                    // Connect nodes
                     sourceRef.current.connect(scriptProcessorRef.current);
                     scriptProcessorRef.current.connect(audioContextRef.current.destination);
                     
-                    // Process audio
                     scriptProcessorRef.current.onaudioprocess = (event) => {
                         const input = event.inputBuffer.getChannelData(0);
                         let sum = 0;
-                        
-                        // Calculate average volume
                         for (let i = 0; i < input.length; i++) {
                             sum += Math.abs(input[i]);
                         }
-                        
-                        // Convert to decibels (simplified)
                         const average = sum / input.length;
                         const volume = Math.round(average * 200);
-                        
                         setNoiseLevel(Math.min(100, volume));
                         setWarning(volume > 70);
                     };
@@ -99,8 +117,13 @@
                     setError('');
                     
                 } catch (err) {
-                    console.error('Error:', err);
-                    setError('Microphone access denied. Please check your browser permissions.');
+                    console.error('Detailed error:', err);
+                    let errorMessage = 'Error accessing microphone: ' + err.message;
+                    if (err.name === 'NotAllowedError') {
+                        errorMessage = 'Microphone access denied. Please check your browser permissions and ensure you are using HTTPS.';
+                    }
+                    setError(errorMessage);
+                    setDebugInfo(prev => prev + '\nError: ' + err.toString());
                     setIsListening(false);
                 }
             };
@@ -145,7 +168,7 @@
                                 </div>
                             )}
                             {error && (
-                                <div className="text-red-500 mb-4">
+                                <div className="text-red-500 mb-4 text-sm">
                                     {error}
                                 </div>
                             )}
@@ -171,6 +194,9 @@
                                 >
                                     Stop
                                 </button>
+                            </div>
+                            <div className="mt-4 text-xs text-gray-500 whitespace-pre-wrap text-left">
+                                {debugInfo}
                             </div>
                         </div>
                     </div>
